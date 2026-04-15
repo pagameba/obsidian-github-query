@@ -47,7 +47,9 @@ exclude_merge_commits: true
 The plugin supports GitHub OAuth Device Flow.
 
 1. Create a GitHub OAuth App and copy its client ID.
-2. In plugin settings, set `GitHub OAuth client ID`.
+2. Either:
+   - set `BUNDLED_GITHUB_OAUTH_CLIENT_ID` in `src/main.ts` before `npm run build` (recommended for releases), or
+   - paste the client ID under **GitHub OAuth client ID (optional override)** in settings.
 3. Click `Sign in with GitHub` and complete authorization in browser.
 4. The plugin stores the OAuth access token and auto-fills your GitHub username.
 

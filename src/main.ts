@@ -11,6 +11,8 @@ import {
   requestUrl
 } from 'obsidian'
 
+const BUNDLED_GITHUB_OAUTH_CLIENT_ID = 'Ov23liMc3jMufRhulvvx'
+
 type QueryEntity = 'prs' | 'commits'
 type QueryMode = 'merged' | 'created'
 
@@ -106,6 +108,14 @@ export default class GithubQueryPlugin extends Plugin {
     await this.saveData(this.settings)
   }
 
+  getOAuthClientId(): string {
+    const override = this.settings.githubOauthClientId.trim()
+    if (override) {
+      return override
+    }
+    return BUNDLED_GITHUB_OAUTH_CLIENT_ID.trim()
+  }
+
   async testGithubAccess(repo?: string): Promise<string> {
     const userResponse = await this.githubApiGet('https://api.github.com/user')
     const user = userResponse.json as { login?: string }
@@ -120,18 +130,22 @@ export default class GithubQueryPlugin extends Plugin {
   }
 
   async beginGithubDeviceFlowAuth(): Promise<DeviceCodeResponse> {
-    const clientId = this.settings.githubOauthClientId.trim()
+    const clientId = this.getOAuthClientId()
     if (!clientId) {
-      throw new Error('Set a GitHub OAuth client ID first.')
+      throw new Error(
+        'Missing GitHub OAuth client ID. Set BUNDLED_GITHUB_OAUTH_CLIENT_ID in the plugin source or enter an override in settings.'
+      )
     }
 
     return this.requestDeviceCode(clientId)
   }
 
   async completeGithubDeviceFlowAuth(deviceCode: DeviceCodeResponse): Promise<void> {
-    const clientId = this.settings.githubOauthClientId.trim()
+    const clientId = this.getOAuthClientId()
     if (!clientId) {
-      throw new Error('Set a GitHub OAuth client ID first.')
+      throw new Error(
+        'Missing GitHub OAuth client ID. Set BUNDLED_GITHUB_OAUTH_CLIENT_ID in the plugin source or enter an override in settings.'
+      )
     }
 
     const token = await this.pollForDeviceAccessToken(clientId, deviceCode)
@@ -642,8 +656,12 @@ class GithubQuerySettingTab extends PluginSettingTab {
     containerEl.createEl('h2', { text: 'GitHub Query Settings' })
 
     new Setting(containerEl)
-      .setName('GitHub OAuth client ID')
-      .setDesc('OAuth app client ID used for GitHub Device Flow sign in.')
+      .setName('GitHub OAuth client ID (optional override)')
+      .setDesc(
+        BUNDLED_GITHUB_OAUTH_CLIENT_ID.trim()
+          ? 'Leave blank to use the bundled OAuth app client ID. Set only to test another OAuth app.'
+          : 'OAuth app client ID for GitHub Device Flow. Paste your OAuth App client ID here (or bundle one in the plugin source before building).'
+      )
       .addText((text) =>
         text
           .setPlaceholder('Iv1.abc123...')
