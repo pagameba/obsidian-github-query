@@ -1,0 +1,17 @@
+.github-query-results h4 {
+  margin-bottom: 0.35rem;
+}
+
+.github-query-results ul {
+  margin-top: 0.2rem;
+}
+
+.github-query-auth-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.github-query-auth-details {
+  margin-top: 0.4rem;
+}

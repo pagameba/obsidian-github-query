@@ -1,0 +1,26 @@
+{
+  "name": "obsidian-github-query",
+  "version": "0.0.1",
+  "description": "Live-rendered GitHub query block plugin for Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs --production",
+    "typecheck": "tsc --noEmit",
+    "install:local": "node scripts/install-local.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "github"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/node": "25.6.0",
+    "esbuild": "0.28.0",
+    "obsidian": "1.12.3",
+    "typescript": "6.0.2"
+  }
+}
