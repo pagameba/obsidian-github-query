@@ -1,0 +1,9 @@
+{
+  "id": "github-query",
+  "name": "GitHub Query",
+  "version": "0.0.1",
+  "minAppVersion": "1.5.0",
+  "description": "Render GitHub query results in notes with a live code block.",
+  "author": "pspencer",
+  "isDesktopOnly": false
+}
