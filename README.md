@@ -2,6 +2,8 @@
 
 Live-rendered `github-query` code blocks for PR and commit activity in notes.
 
+In Obsidian, use **Command palette → Insert GitHub query block** for guided templates, or open plugin settings and expand **Block syntax & fields**. Invalid blocks show inline hints in Reading view.
+
 ## Development
 
 - `npm install`
