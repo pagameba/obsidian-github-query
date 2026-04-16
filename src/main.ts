@@ -20,8 +20,8 @@ const BLOCK_FIELD_REFERENCE = `Required
   entity: prs | commits
 
 Common
-  mode: merged | created     (PRs only; default merged)
-  date: YYYY-MM-DD | from-note | (omit = use note filename date)
+  mode: merged | created | open     (PRs only; default merged)
+  date: YYYY-MM-DD | from-note | (omit = use note filename date; ignored for mode: open)
   author: @me | github-login
   repo: owner/name          (required for commits; optional filter for PRs)
   limit: 20                 (page size for API + Load more)
@@ -32,7 +32,7 @@ Commits only
 Lines must look like key: value. Use # at line start for comments.`
 
 type QueryEntity = 'prs' | 'commits'
-type QueryMode = 'merged' | 'created'
+type QueryMode = 'merged' | 'created' | 'open'
 
 type BlockParseResult =
   | { ok: true; block: GithubQueryBlock }
@@ -113,6 +113,10 @@ class GithubQueryTemplateModal extends FuzzySuggestModal<QueryTemplateItem> {
 
   getItems(): QueryTemplateItem[] {
     return [
+      {
+        label: 'Open PRs (no date filter)',
+        snippet: 'entity: prs\nmode: open\nauthor: @me'
+      },
       {
         label: 'PRs merged on note date',
         snippet: 'entity: prs\nmode: merged\nauthor: @me'
@@ -294,15 +298,20 @@ export default class GithubQueryPlugin extends Plugin {
     }
     const parsed = parsedResult.block
 
-    const resolvedDate = this.resolveDate(parsed, ctx.sourcePath)
-
-    if (!resolvedDate) {
-      this.renderBlockHelp(el, 'Could not resolve the date for this block.', [
-        'Use date: YYYY-MM-DD for a fixed calendar day.',
-        'Use date: from-note or omit date to take YYYY-MM-DD from the note filename.',
-        'If the filename has no date, add date: YYYY-MM-DD to the block.'
-      ])
-      return
+    let resolvedDate: string | undefined
+    if (parsed.entity === 'prs' && parsed.mode === 'open') {
+      resolvedDate = undefined
+    } else {
+      const d = this.resolveDate(parsed, ctx.sourcePath)
+      if (!d) {
+        this.renderBlockHelp(el, 'Could not resolve the date for this block.', [
+          'Use date: YYYY-MM-DD for a fixed calendar day.',
+          'Use date: from-note or omit date to take YYYY-MM-DD from the note filename.',
+          'If the filename has no date, add date: YYYY-MM-DD to the block.'
+        ])
+        return
+      }
+      resolvedDate = d
     }
 
     const authorRaw = parsed.author === '@me' ? this.settings.githubUsername : parsed.author ?? ''
@@ -322,8 +331,10 @@ export default class GithubQueryPlugin extends Plugin {
       listEl.empty()
       const headingText =
         parsed.entity === 'prs'
-          ? `PRs ${parsed.mode ?? 'merged'} on ${resolvedDate}`
-          : `Commits on ${resolvedDate}`
+          ? parsed.mode === 'open'
+            ? 'Open PRs'
+            : `PRs ${parsed.mode ?? 'merged'} on ${resolvedDate!}`
+          : `Commits on ${resolvedDate!}`
       listEl.createEl('h4', { text: headingText })
       if (parsed.entity === 'commits' && (parsed.excludeMergeCommits ?? false)) {
         listEl.createEl('p', { text: 'Merge commits excluded.' })
@@ -351,14 +362,14 @@ export default class GithubQueryPlugin extends Plugin {
           parsed.entity === 'prs'
             ? await this.fetchPullRequests({
                 mode: parsed.mode ?? 'merged',
-                date: resolvedDate,
+                date: parsed.mode === 'open' ? undefined : resolvedDate,
                 author,
                 repo: parsed.repo,
                 limit: parsed.limit ?? this.settings.defaultLimit,
                 page
               })
             : await this.fetchCommits({
-                date: resolvedDate,
+                date: resolvedDate as string,
                 author,
                 repo: parsed.repo,
                 limit: parsed.limit ?? this.settings.defaultLimit,
@@ -463,11 +474,11 @@ export default class GithubQueryPlugin extends Plugin {
     }
 
     const mode = data.mode as QueryMode | undefined
-    if (mode && mode !== 'merged' && mode !== 'created') {
+    if (mode && mode !== 'merged' && mode !== 'created' && mode !== 'open') {
       return {
         ok: false,
         title: `Unknown mode: ${mode}`,
-        hints: ['For PRs use mode: merged or mode: created.', 'Commits ignore mode.']
+        hints: ['For PRs use mode: merged, mode: created, or mode: open.', 'Commits ignore mode.']
       }
     }
 
@@ -744,7 +755,7 @@ export default class GithubQueryPlugin extends Plugin {
 
   private async fetchPullRequests(params: {
     mode: QueryMode
-    date: string
+    date?: string
     author: string
     repo?: string
     limit: number
@@ -754,9 +765,17 @@ export default class GithubQueryPlugin extends Plugin {
     return this.getOrSetCache(key, async () => {
       const author = this.sanitizeGithubLogin(params.author)
       const qualifiers = ['is:pr', `author:${author}`]
-      if (params.mode === 'merged') {
+      if (params.mode === 'open') {
+        qualifiers.push('is:open')
+      } else if (params.mode === 'merged') {
+        if (!params.date) {
+          throw new Error('merged mode requires date: YYYY-MM-DD')
+        }
         qualifiers.push('is:merged', `merged:${params.date}`)
       } else {
+        if (!params.date) {
+          throw new Error('created mode requires date: YYYY-MM-DD')
+        }
         qualifiers.push(`created:${params.date}`)
       }
 
