@@ -9,6 +9,7 @@ import {
   PluginSettingTab,
   RequestUrlResponse,
   Setting,
+  setIcon,
   requestUrl
 } from 'obsidian'
 
@@ -330,8 +331,16 @@ export default class GithubQueryPlugin extends Plugin {
       }
 
       const ul = listEl.createEl('ul')
-      const controlsEl = listEl.createDiv({ cls: 'github-query-auth-actions' })
-      const loadMoreButton = controlsEl.createEl('button', { text: 'Load more' })
+      const controlsEl = listEl.createDiv({ cls: 'github-query-block-actions' })
+      const refreshBtn = controlsEl.createEl('button', {
+        cls: 'github-query-refresh',
+        attr: { 'aria-label': 'Refresh this query', title: 'Refresh results' }
+      })
+      setIcon(refreshBtn, 'refresh-cw')
+      const loadMoreButton = controlsEl.createEl('button', {
+        cls: 'github-query-load-more',
+        text: 'Load more'
+      })
       loadMoreButton.hide()
       let nextPage = 1
 
@@ -346,29 +355,39 @@ export default class GithubQueryPlugin extends Plugin {
         }
       }
 
-      const loadPage = async (page: number) => {
+      const loadPage = async (page: number, options?: { bypassCache?: boolean }) => {
+        if (page === 1) {
+          ul.empty()
+          listEl.querySelector('.github-query-empty-msg')?.remove()
+          listEl.querySelector('.github-query-error-msg')?.remove()
+        }
         const result =
           parsed.entity === 'prs'
-            ? await this.fetchPullRequests({
-                mode: parsed.mode ?? 'merged',
-                date: resolvedDate,
-                author,
-                repo: parsed.repo,
-                limit: parsed.limit ?? this.settings.defaultLimit,
-                page
-              })
-            : await this.fetchCommits({
-                date: resolvedDate,
-                author,
-                repo: parsed.repo,
-                limit: parsed.limit ?? this.settings.defaultLimit,
-                page,
-                excludeMergeCommits: parsed.excludeMergeCommits ?? false
-              })
+            ? await this.fetchPullRequests(
+                {
+                  mode: parsed.mode ?? 'merged',
+                  date: resolvedDate,
+                  author,
+                  repo: parsed.repo,
+                  limit: parsed.limit ?? this.settings.defaultLimit,
+                  page
+                },
+                { bypassCache: options?.bypassCache }
+              )
+            : await this.fetchCommits(
+                {
+                  date: resolvedDate,
+                  author,
+                  repo: parsed.repo,
+                  limit: parsed.limit ?? this.settings.defaultLimit,
+                  page,
+                  excludeMergeCommits: parsed.excludeMergeCommits ?? false
+                },
+                { bypassCache: options?.bypassCache }
+              )
 
         if (page === 1 && result.items.length === 0) {
-          ul.empty()
-          listEl.createEl('p', { text: 'No results found.' })
+          listEl.createEl('p', { cls: 'github-query-empty-msg', text: 'No results found.' })
           loadMoreButton.hide()
           return
         }
@@ -381,6 +400,24 @@ export default class GithubQueryPlugin extends Plugin {
           loadMoreButton.hide()
         }
       }
+
+      refreshBtn.addEventListener('click', async () => {
+        refreshBtn.disabled = true
+        try {
+          nextPage = 1
+          loadMoreButton.hide()
+          await loadPage(1, { bypassCache: true })
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'Unknown error while querying GitHub.'
+          listEl.querySelector('.github-query-empty-msg')?.remove()
+          ul.empty()
+          listEl.createEl('p', { cls: 'github-query-error-msg', text: `GitHub query failed: ${message}` })
+          console.error(`GitHub query plugin error: ${message}`, error)
+        } finally {
+          refreshBtn.disabled = false
+        }
+      })
 
       loadMoreButton.addEventListener('click', async () => {
         loadMoreButton.disabled = true
@@ -641,13 +678,23 @@ export default class GithubQueryPlugin extends Plugin {
     const leaves = this.app.workspace.getLeavesOfType('markdown')
     let refreshed = 0
     for (const leaf of leaves) {
-      const view = leaf.view as MarkdownView & { previewMode?: { rerender?: (force?: boolean) => void } }
-      if (typeof view.previewMode?.rerender === 'function') {
+      const view = leaf.view
+      if (!(view instanceof MarkdownView)) {
+        continue
+      }
+      try {
         view.previewMode.rerender(true)
+        view.editor.refresh()
         refreshed += 1
+      } catch (error) {
+        console.error(`GitHub query refresh failed for a markdown view`, error)
       }
     }
-    new Notice(refreshed > 0 ? `Refreshed GitHub query blocks in ${refreshed} view(s).` : 'No preview views found to refresh.')
+    new Notice(
+      refreshed > 0
+        ? `Cleared GitHub query cache and refreshed ${refreshed} markdown view(s).`
+        : 'No open markdown views to refresh.'
+    )
   }
 
   private async requestDeviceCode(clientId: string): Promise<DeviceCodeResponse> {
@@ -742,16 +789,18 @@ export default class GithubQueryPlugin extends Plugin {
     })
   }
 
-  private async fetchPullRequests(params: {
-    mode: QueryMode
-    date: string
-    author: string
-    repo?: string
-    limit: number
-    page: number
-  }): Promise<PagedQueryResult> {
-    const key = this.getCacheKey('prs', params)
-    return this.getOrSetCache(key, async () => {
+  private async fetchPullRequests(
+    params: {
+      mode: QueryMode
+      date: string
+      author: string
+      repo?: string
+      limit: number
+      page: number
+    },
+    options?: { bypassCache?: boolean }
+  ): Promise<PagedQueryResult> {
+    const loader = async (): Promise<PagedQueryResult> => {
       const author = this.sanitizeGithubLogin(params.author)
       const qualifiers = ['is:pr', `author:${author}`]
       if (params.mode === 'merged') {
@@ -786,23 +835,31 @@ export default class GithubQueryPlugin extends Plugin {
         })),
         hasMore
       }
-    })
+    }
+
+    if (options?.bypassCache) {
+      return loader()
+    }
+    const key = this.getCacheKey('prs', params)
+    return this.getOrSetCache(key, loader)
   }
 
-  private async fetchCommits(params: {
-    date: string
-    author: string
-    repo?: string
-    limit: number
-    page: number
-    excludeMergeCommits: boolean
-  }): Promise<PagedQueryResult> {
+  private async fetchCommits(
+    params: {
+      date: string
+      author: string
+      repo?: string
+      limit: number
+      page: number
+      excludeMergeCommits: boolean
+    },
+    options?: { bypassCache?: boolean }
+  ): Promise<PagedQueryResult> {
     if (!params.repo) {
       throw new Error('Commits query currently requires repo: owner/name')
     }
 
-    const key = this.getCacheKey('commits', params)
-    return this.getOrSetCache(key, async () => {
+    const loader = async (): Promise<PagedQueryResult> => {
       const author = this.sanitizeGithubLogin(params.author)
       const { sinceIso, startMs, endMs } = this.getUtcRangeForDate(params.date)
       const perPage = Math.min(Math.max(params.limit, 1), 100)
@@ -847,7 +904,13 @@ export default class GithubQueryPlugin extends Plugin {
         })),
         hasMore: commits.length === perPage
       }
-    })
+    }
+
+    if (options?.bypassCache) {
+      return loader()
+    }
+    const key = this.getCacheKey('commits', params)
+    return this.getOrSetCache(key, loader)
   }
 }
 
