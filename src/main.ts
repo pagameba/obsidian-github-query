@@ -1,5 +1,6 @@
 import {
   App,
+  FuzzySuggestModal,
   MarkdownView,
   MarkdownPostProcessorContext,
   Notice,
@@ -13,8 +14,29 @@ import {
 
 const BUNDLED_GITHUB_OAUTH_CLIENT_ID = 'Ov23liMc3jMufRhulvvx'
 
+const PLUGIN_DOCS_URL = 'https://github.com/pagameba/obsidian-github-query#readme'
+
+const BLOCK_FIELD_REFERENCE = `Required
+  entity: prs | commits
+
+Common
+  mode: merged | created     (PRs only; default merged)
+  date: YYYY-MM-DD | from-note | (omit = use note filename date)
+  author: @me | github-login
+  repo: owner/name          (required for commits; optional filter for PRs)
+  limit: 20                 (page size for API + Load more)
+
+Commits only
+  exclude_merge_commits: true | false
+
+Lines must look like key: value. Use # at line start for comments.`
+
 type QueryEntity = 'prs' | 'commits'
 type QueryMode = 'merged' | 'created'
+
+type BlockParseResult =
+  | { ok: true; block: GithubQueryBlock }
+  | { ok: false; title: string; hints: string[] }
 
 interface GithubQueryBlock {
   entity: QueryEntity
@@ -75,6 +97,60 @@ interface PagedQueryResult {
   hasMore: boolean
 }
 
+interface QueryTemplateItem {
+  label: string
+  snippet: string
+}
+
+class GithubQueryTemplateModal extends FuzzySuggestModal<QueryTemplateItem> {
+  constructor(
+    app: App,
+    private readonly onPick: (snippet: string) => void
+  ) {
+    super(app)
+    this.setPlaceholder('Search templates (merged PRs, commits, …)')
+  }
+
+  getItems(): QueryTemplateItem[] {
+    return [
+      {
+        label: 'PRs merged on note date',
+        snippet: 'entity: prs\nmode: merged\nauthor: @me'
+      },
+      {
+        label: 'PRs merged on a fixed day',
+        snippet: 'entity: prs\nmode: merged\ndate: 2026-04-15\nauthor: @me'
+      },
+      {
+        label: 'PRs opened on note date',
+        snippet: 'entity: prs\nmode: created\nauthor: @me'
+      },
+      {
+        label: 'PRs merged in one repo',
+        snippet: 'entity: prs\nmode: merged\nrepo: your-org/your-repo\nauthor: @me'
+      },
+      {
+        label: 'Commits in repo (note date)',
+        snippet:
+          'entity: commits\nrepo: your-org/your-repo\nauthor: @me\nexclude_merge_commits: true'
+      },
+      {
+        label: 'Commits in repo (fixed day)',
+        snippet:
+          'entity: commits\ndate: 2026-04-15\nrepo: your-org/your-repo\nauthor: @me\nexclude_merge_commits: true'
+      }
+    ]
+  }
+
+  getItemText(item: QueryTemplateItem): string {
+    return item.label
+  }
+
+  onChooseItem(item: QueryTemplateItem, _evt: MouseEvent | KeyboardEvent): void {
+    this.onPick(item.snippet)
+  }
+}
+
 export default class GithubQueryPlugin extends Plugin {
   settings!: GithubQuerySettings
   queryCache = new Map<string, { expiresAt: number; value: unknown }>()
@@ -94,6 +170,14 @@ export default class GithubQueryPlugin extends Plugin {
       name: 'Refresh GitHub query blocks',
       callback: () => {
         this.refreshGithubQueryBlocks()
+      }
+    })
+
+    this.addCommand({
+      id: 'insert-github-query-block',
+      name: 'Insert GitHub query block',
+      callback: () => {
+        this.openQueryTemplatePicker()
       }
     })
 
@@ -164,30 +248,70 @@ export default class GithubQueryPlugin extends Plugin {
     await this.saveSettings()
   }
 
+  openQueryTemplatePicker(): void {
+    const modal = new GithubQueryTemplateModal(this.app, (snippet) => {
+      this.insertGithubQueryBlockAtCursor(snippet)
+    })
+    modal.open()
+  }
+
+  insertGithubQueryBlockAtCursor(snippet: string): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView)
+    if (!view) {
+      new Notice('Open a markdown note first.')
+      return
+    }
+    const editor = view.editor
+    const cursor = editor.getCursor()
+    const body = `\n\`\`\`github-query\n${snippet}\n\`\`\`\n`
+    editor.replaceRange(body, cursor)
+    new Notice('Inserted github-query block.')
+  }
+
+  private renderBlockHelp(el: HTMLElement, title: string, hints: string[]) {
+    el.addClass('github-query-block-help')
+    el.createEl('p', { cls: 'github-query-block-help-title', text: title })
+    const ul = el.createEl('ul', { cls: 'github-query-block-help-hints' })
+    for (const hint of hints) {
+      ul.createEl('li', { text: hint })
+    }
+    const docRow = el.createEl('p', { cls: 'github-query-block-help-docs' })
+    const link = docRow.createEl('a', { text: 'Examples & full reference on GitHub', href: PLUGIN_DOCS_URL })
+    link.setAttr('target', '_blank')
+    const cmd = el.createEl('p', { cls: 'github-query-block-help-cmd' })
+    cmd.setText('Tip: Command palette → Insert GitHub query block')
+  }
+
   private async renderGithubQueryBlock(
     source: string,
     el: HTMLElement,
     ctx: MarkdownPostProcessorContext
   ) {
-    const parsed = this.parseBlock(source)
-    if (!parsed) {
-      el.createEl('p', { text: 'Invalid github-query block format.' })
+    const parsedResult = this.parseBlock(source)
+    if (!parsedResult.ok) {
+      this.renderBlockHelp(el, parsedResult.title, parsedResult.hints)
       return
     }
+    const parsed = parsedResult.block
 
     const resolvedDate = this.resolveDate(parsed, ctx.sourcePath)
 
     if (!resolvedDate) {
-      el.createEl('p', {
-        text: 'Unable to resolve date. Use YYYY-MM-DD, or omit date/use date: from-note to use the note date.'
-      })
+      this.renderBlockHelp(el, 'Could not resolve the date for this block.', [
+        'Use date: YYYY-MM-DD for a fixed calendar day.',
+        'Use date: from-note or omit date to take YYYY-MM-DD from the note filename.',
+        'If the filename has no date, add date: YYYY-MM-DD to the block.'
+      ])
       return
     }
 
     const authorRaw = parsed.author === '@me' ? this.settings.githubUsername : parsed.author ?? ''
     const author = this.sanitizeGithubLogin(authorRaw)
     if (!author) {
-      el.createEl('p', { text: 'Set GitHub username in plugin settings or provide author.' })
+      this.renderBlockHelp(el, 'No GitHub author is set for this query.', [
+        'Add author: your-login or author: @me to the block.',
+        'For @me, set GitHub username in plugin settings (OAuth usually fills this).'
+      ])
       return
     }
 
@@ -279,7 +403,7 @@ export default class GithubQueryPlugin extends Plugin {
     }
   }
 
-  private parseBlock(source: string): GithubQueryBlock | null {
+  private parseBlock(source: string): BlockParseResult {
     const data: Record<string, string> = {}
     for (const rawLine of source.split('\n')) {
       const line = rawLine.trim()
@@ -289,35 +413,124 @@ export default class GithubQueryPlugin extends Plugin {
 
       const idx = line.indexOf(':')
       if (idx <= 0) {
-        return null
+        return {
+          ok: false,
+          title: 'Invalid line in github-query block.',
+          hints: [
+            'Each non-comment line must look like key: value.',
+            `Fix or remove this line: ${line}`
+          ]
+        }
       }
 
       const key = line.slice(0, idx).trim().toLowerCase()
       const value = line.slice(idx + 1).trim()
+      if (!key) {
+        return {
+          ok: false,
+          title: 'Missing key before ":".',
+          hints: ['Use lines like entity: prs or author: @me.', `Problem line: ${line}`]
+        }
+      }
       data[key] = value
     }
 
+    if (Object.keys(data).length === 0) {
+      return {
+        ok: false,
+        title: 'This github-query block is empty.',
+        hints: [
+          'Add at least entity: prs or entity: commits.',
+          'Use Command palette → Insert GitHub query block for a starter template.'
+        ]
+      }
+    }
+
     if (!data.entity) {
-      return null
+      return {
+        ok: false,
+        title: 'Missing required field: entity',
+        hints: ['Add a line: entity: prs or entity: commits.']
+      }
     }
 
     if (data.entity !== 'prs' && data.entity !== 'commits') {
-      return null
+      return {
+        ok: false,
+        title: `Unknown entity: ${data.entity}`,
+        hints: ['Use entity: prs or entity: commits.']
+      }
     }
 
     const mode = data.mode as QueryMode | undefined
     if (mode && mode !== 'merged' && mode !== 'created') {
-      return null
+      return {
+        ok: false,
+        title: `Unknown mode: ${mode}`,
+        hints: ['For PRs use mode: merged or mode: created.', 'Commits ignore mode.']
+      }
+    }
+
+    if (data.date !== undefined) {
+      const d = data.date.trim()
+      if (d && d !== 'from-note' && !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+        return {
+          ok: false,
+          title: 'Invalid date value.',
+          hints: [
+            'Use date: YYYY-MM-DD, date: from-note, or omit date to use the note filename.',
+            `Got: ${d}`
+          ]
+        }
+      }
+    }
+
+    let limit: number | undefined
+    if (data.limit !== undefined && data.limit.trim() !== '') {
+      const parsedLimit = Number(data.limit)
+      if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+        return {
+          ok: false,
+          title: 'Invalid limit.',
+          hints: ['limit must be a positive number.', `Got: ${data.limit}`]
+        }
+      }
+      limit = Math.floor(parsedLimit)
+    }
+
+    if (
+      data.exclude_merge_commits !== undefined &&
+      data.exclude_merge_commits.trim() !== '' &&
+      this.parseBoolean(data.exclude_merge_commits) === undefined
+    ) {
+      return {
+        ok: false,
+        title: 'Invalid exclude_merge_commits value.',
+        hints: ['Use exclude_merge_commits: true or false.', `Got: ${data.exclude_merge_commits}`]
+      }
+    }
+
+    const entity = data.entity as QueryEntity
+    const repo = data.repo?.trim()
+    if (entity === 'commits' && !repo) {
+      return {
+        ok: false,
+        title: 'Commits queries need a repository.',
+        hints: ['Add repo: owner/name (same format as on GitHub).']
+      }
     }
 
     return {
-      entity: data.entity as QueryEntity,
-      mode,
-      date: data.date,
-      author: data.author,
-      repo: data.repo,
-      limit: data.limit ? Number(data.limit) : undefined,
-      excludeMergeCommits: this.parseBoolean(data.exclude_merge_commits)
+      ok: true,
+      block: {
+        entity,
+        mode,
+        date: data.date,
+        author: data.author,
+        repo: data.repo,
+        limit,
+        excludeMergeCommits: this.parseBoolean(data.exclude_merge_commits)
+      }
     }
   }
 
@@ -784,6 +997,21 @@ class GithubQuerySettingTab extends PluginSettingTab {
           }
         })
       )
+
+    const syntax = containerEl.createEl('details', { cls: 'github-query-syntax-details' })
+    syntax.createEl('summary', { text: 'Block syntax & fields' })
+    const syntaxInner = syntax.createEl('div', { cls: 'github-query-syntax-inner' })
+    syntaxInner.createEl('p', {
+      text: 'Use a fenced code block with language github-query. One key: value per line. Comments start with #.'
+    })
+    syntaxInner.createEl('p', {
+      text: 'Command palette: Insert GitHub query block — picks a template and inserts it at the cursor.'
+    })
+    const pre = syntaxInner.createEl('pre', { cls: 'github-query-syntax-pre' })
+    pre.setText(BLOCK_FIELD_REFERENCE)
+    const docLink = syntaxInner.createEl('p')
+    const a = docLink.createEl('a', { text: 'More examples on GitHub', href: PLUGIN_DOCS_URL })
+    a.setAttr('target', '_blank')
   }
 
   private renderOauthPanel() {

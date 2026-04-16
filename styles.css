@@ -15,3 +15,47 @@
 .github-query-auth-details {
   margin-top: 0.4rem;
 }
+
+.github-query-block-help {
+  font-size: 0.9em;
+  line-height: 1.35;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.github-query-block-help-title {
+  font-weight: 600;
+  margin: 0 0 0.35rem;
+}
+
+.github-query-block-help-hints {
+  margin: 0.25rem 0 0.35rem 1.1rem;
+}
+
+.github-query-block-help-docs,
+.github-query-block-help-cmd {
+  margin: 0.35rem 0 0;
+  opacity: 0.9;
+}
+
+.github-query-syntax-details {
+  margin-top: 1rem;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 0.75rem;
+}
+
+.github-query-syntax-inner {
+  margin-top: 0.5rem;
+}
+
+.github-query-syntax-pre {
+  margin: 0.5rem 0 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+}
