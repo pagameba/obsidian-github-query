@@ -26,6 +26,9 @@ Common
   author: @me | github-login  (optional for PRs, required for commits)
   repo: owner/name          (required for commits; optional filter for PRs)
   limit: 20                 (page size for API + Load more)
+  layout: list | table      (optional; defaults from plugin settings)
+  density: compact | comfortable  (optional; list + table spacing; defaults from settings)
+  stats: true | false       (optional; +/− line counts; one extra GitHub request per row)
 
 Commits only
   exclude_merge_commits: true | false
@@ -34,6 +37,8 @@ Lines must look like key: value. Use # at line start for comments.`
 
 type QueryEntity = 'prs' | 'commits'
 type QueryMode = 'merged' | 'created' | 'open'
+type QueryLayout = 'list' | 'table'
+type QueryDensity = 'compact' | 'comfortable'
 
 type BlockParseResult =
   | { ok: true; block: GithubQueryBlock }
@@ -47,6 +52,9 @@ interface GithubQueryBlock {
   repo?: string
   limit?: number
   excludeMergeCommits?: boolean
+  layout?: QueryLayout
+  density?: QueryDensity
+  showStats?: boolean
 }
 
 interface GithubQuerySettings {
@@ -56,6 +64,9 @@ interface GithubQuerySettings {
   githubOauthToken: string
   noteDatePattern: string
   defaultLimit: number
+  defaultLayout: QueryLayout
+  defaultDensity: QueryDensity
+  defaultStats: boolean
   cacheTtlMinutes: number
   timezoneOffsetMinutes: number
   accessCheckRepo: string
@@ -68,6 +79,9 @@ const DEFAULT_SETTINGS: GithubQuerySettings = {
   githubOauthToken: '',
   noteDatePattern: 'YYYY-MM-DD',
   defaultLimit: 20,
+  defaultLayout: 'list',
+  defaultDensity: 'comfortable',
+  defaultStats: false,
   cacheTtlMinutes: 10,
   timezoneOffsetMinutes: new Date().getTimezoneOffset(),
   accessCheckRepo: ''
@@ -91,6 +105,10 @@ interface QueryResultItem {
   title: string
   url: string
   subtitle?: string
+  avatarUrl?: string
+  authorLogin?: string
+  statsAdditions?: number
+  statsDeletions?: number
 }
 
 interface PagedQueryResult {
@@ -330,6 +348,12 @@ export default class GithubQueryPlugin extends Plugin {
 
     try {
       listEl.empty()
+      const layout = parsed.layout ?? this.settings.defaultLayout
+      const density = parsed.density ?? this.settings.defaultDensity
+      const showStats = parsed.showStats ?? this.settings.defaultStats
+      listEl.addClass(`github-query-layout-${layout}`)
+      listEl.addClass(`github-query-density-${density}`)
+
       const headingText =
         parsed.entity === 'prs'
           ? parsed.mode === 'open'
@@ -341,7 +365,27 @@ export default class GithubQueryPlugin extends Plugin {
         listEl.createEl('p', { text: 'Merge commits excluded.' })
       }
 
-      const ul = listEl.createEl('ul')
+      const resultsBody = listEl.createDiv({ cls: 'github-query-results-body' })
+      let itemsRoot!: HTMLElement
+
+      const buildResultsShell = () => {
+        resultsBody.empty()
+        if (layout === 'table') {
+          const wrap = resultsBody.createDiv({ cls: 'github-query-table-wrap' })
+          const table = wrap.createEl('table', { cls: 'github-query-table' })
+          const thead = table.createEl('thead')
+          const trh = thead.createEl('tr')
+          trh.createEl('th', { text: 'Title' })
+          trh.createEl('th', { text: 'Detail' })
+          if (showStats) {
+            trh.createEl('th', { cls: 'github-query-col-stats-header', text: '+/−' })
+          }
+          itemsRoot = table.createEl('tbody')
+        } else {
+          itemsRoot = resultsBody.createEl('ul', { cls: 'github-query-list' })
+        }
+      }
+
       const controlsEl = listEl.createDiv({ cls: 'github-query-block-actions' })
       const refreshBtn = controlsEl.createEl('button', {
         cls: 'github-query-refresh',
@@ -356,21 +400,77 @@ export default class GithubQueryPlugin extends Plugin {
       let nextPage = 1
 
       const appendItems = (items: QueryResultItem[]) => {
-        for (const item of items) {
-          const li = ul.createEl('li')
-          const link = li.createEl('a', { text: item.title, href: item.url })
-          link.setAttr('target', '_blank')
-          if (item.subtitle) {
-            li.appendText(` (${item.subtitle})`)
+        if (layout === 'table') {
+          const tbody = itemsRoot
+          for (const item of items) {
+            const tr = tbody.createEl('tr')
+            const tdTitle = tr.createEl('td', { cls: 'github-query-col-title' })
+            const head = tdTitle.createDiv({ cls: 'github-query-item-head' })
+            this.appendQueryResultAuthorAvatar(head, item)
+            const textCol = head.createDiv({ cls: 'github-query-item-head-text' })
+            const link = textCol.createEl('a', { text: item.title, href: item.url })
+            link.setAttr('target', '_blank')
+            const tdDetail = tr.createEl('td', { cls: 'github-query-col-detail' })
+            if (item.subtitle) {
+              tdDetail.setText(item.subtitle)
+            } else {
+              tdDetail.addClass('github-query-empty-cell')
+              tdDetail.setText('—')
+            }
+            if (showStats) {
+              const tdStats = tr.createEl('td', { cls: 'github-query-col-stats' })
+              if (item.statsAdditions !== undefined && item.statsDeletions !== undefined) {
+                this.appendQueryResultStatsInner(tdStats, item)
+              } else {
+                tdStats.addClass('github-query-empty-cell')
+                tdStats.setText('—')
+              }
+            }
+          }
+        } else {
+          const ul = itemsRoot
+          for (const item of items) {
+            if (density === 'comfortable') {
+              const li = ul.createEl('li', { cls: 'github-query-li-comfortable' })
+              const avatarCell = li.createDiv({ cls: 'github-query-li-avatar-cell' })
+              this.appendQueryResultAuthorAvatar(avatarCell, item)
+              const textStack = li.createDiv({ cls: 'github-query-li-text-stack' })
+              const link = textStack.createEl('a', { text: item.title, href: item.url })
+              link.setAttr('target', '_blank')
+              const hasMeta = Boolean(item.subtitle)
+              const hasStats =
+                item.statsAdditions !== undefined && item.statsDeletions !== undefined
+              if (hasMeta || hasStats) {
+                const metaRow = textStack.createDiv({ cls: 'github-query-li-meta-row' })
+                if (hasMeta) {
+                  metaRow.createDiv({ cls: 'github-query-li-meta', text: item.subtitle })
+                }
+                if (hasStats) {
+                  const statsWrap = metaRow.createDiv({ cls: 'github-query-li-stats' })
+                  this.appendQueryResultStatsInner(statsWrap, item)
+                }
+              }
+            } else {
+              const li = ul.createEl('li', { cls: 'github-query-li-compact' })
+              const head = li.createDiv({ cls: 'github-query-item-head' })
+              this.appendQueryResultAuthorAvatar(head, item)
+              const textCol = head.createDiv({ cls: 'github-query-item-head-text' })
+              const link = textCol.createEl('a', { text: item.title, href: item.url })
+              link.setAttr('target', '_blank')
+              if (item.subtitle) {
+                textCol.appendText(` (${item.subtitle})`)
+              }
+              this.appendQueryResultStatsCompact(textCol, item)
+            }
           }
         }
       }
 
       const loadPage = async (page: number, options?: { bypassCache?: boolean }) => {
         if (page === 1) {
-          ul.empty()
           listEl.querySelector('.github-query-empty-msg')?.remove()
           listEl.querySelector('.github-query-error-msg')?.remove()
+          buildResultsShell()
         }
         const result =
           parsed.entity === 'prs'
@@ -381,7 +481,8 @@ export default class GithubQueryPlugin extends Plugin {
                   author,
                   repo: parsed.repo,
                   limit: parsed.limit ?? this.settings.defaultLimit,
-                  page
+                  page,
+                  showStats
                 },
                 { bypassCache: options?.bypassCache }
               )
@@ -392,13 +493,15 @@ export default class GithubQueryPlugin extends Plugin {
                   repo: parsed.repo,
                   limit: parsed.limit ?? this.settings.defaultLimit,
                   page,
-                  excludeMergeCommits: parsed.excludeMergeCommits ?? false
+                  excludeMergeCommits: parsed.excludeMergeCommits ?? false,
+                  showStats
                 },
                 { bypassCache: options?.bypassCache }
               )
 
         if (page === 1 && result.items.length === 0) {
-          listEl.createEl('p', { cls: 'github-query-empty-msg', text: 'No results found.' })
+          resultsBody.empty()
+          resultsBody.createEl('p', { cls: 'github-query-empty-msg', text: 'No results found.' })
           loadMoreButton.hide()
           return
         }
@@ -422,8 +525,11 @@ export default class GithubQueryPlugin extends Plugin {
           const message =
             error instanceof Error ? error.message : 'Unknown error while querying GitHub.'
           listEl.querySelector('.github-query-empty-msg')?.remove()
-          ul.empty()
-          listEl.createEl('p', { cls: 'github-query-error-msg', text: `GitHub query failed: ${message}` })
+          resultsBody.empty()
+          resultsBody.createEl('p', {
+            cls: 'github-query-error-msg',
+            text: `GitHub query failed: ${message}`
+          })
           console.error(`GitHub query plugin error: ${message}`, error)
         } finally {
           refreshBtn.disabled = false
@@ -558,6 +664,47 @@ export default class GithubQueryPlugin extends Plugin {
       }
     }
 
+    let layout: QueryLayout | undefined
+    if (data.layout !== undefined && data.layout.trim() !== '') {
+      const lv = data.layout.trim().toLowerCase()
+      if (lv !== 'list' && lv !== 'table') {
+        return {
+          ok: false,
+          title: 'Invalid layout value.',
+          hints: ['Use layout: list or layout: table.', `Got: ${data.layout}`]
+        }
+      }
+      layout = lv as QueryLayout
+    }
+
+    let density: QueryDensity | undefined
+    if (data.density !== undefined && data.density.trim() !== '') {
+      const dv = data.density.trim().toLowerCase()
+      if (dv !== 'compact' && dv !== 'comfortable') {
+        return {
+          ok: false,
+          title: 'Invalid density value.',
+          hints: [
+            'Use density: compact or density: comfortable.',
+            `Got: ${data.density}`
+          ]
+        }
+      }
+      density = dv as QueryDensity
+    }
+
+    if (
+      data.stats !== undefined &&
+      data.stats.trim() !== '' &&
+      this.parseBoolean(data.stats) === undefined
+    ) {
+      return {
+        ok: false,
+        title: 'Invalid stats value.',
+        hints: ['Use stats: true or stats: false.', `Got: ${data.stats}`]
+      }
+    }
+
     const entity = data.entity as QueryEntity
     const repo = data.repo?.trim()
     const author = data.author?.trim()
@@ -585,7 +732,10 @@ export default class GithubQueryPlugin extends Plugin {
         author,
         repo: data.repo,
         limit,
-        excludeMergeCommits: this.parseBoolean(data.exclude_merge_commits)
+        excludeMergeCommits: this.parseBoolean(data.exclude_merge_commits),
+        layout,
+        density,
+        showStats: this.parseBoolean(data.stats)
       }
     }
   }
@@ -657,8 +807,88 @@ export default class GithubQueryPlugin extends Plugin {
     return response
   }
 
+  private async githubGraphqlRequest<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const response = await requestUrl({
+      url: 'https://api.github.com/graphql',
+      method: 'POST',
+      headers: {
+        ...this.getAuthHeaders(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ query, variables }),
+      throw: false
+    })
+
+    if (response.status >= 400) {
+      throw new Error(this.formatGithubApiError(response))
+    }
+
+    const body = response.json as { data?: T; errors?: Array<{ message?: string }> }
+    if (body.errors && body.errors.length > 0) {
+      const msg = body.errors.map((err) => err.message ?? 'Unknown GraphQL error').join('; ')
+      throw new Error(`GitHub GraphQL error: ${msg}`)
+    }
+    if (!body.data) {
+      throw new Error('GitHub GraphQL error: missing data in response')
+    }
+    return body.data
+  }
+
   private sanitizeGithubLogin(login: string): string {
     return login.replace(/^@/, '').trim()
+  }
+
+  private appendQueryResultAuthorAvatar(host: HTMLElement, item: QueryResultItem): void {
+    const wrap = host.createDiv({ cls: 'github-query-avatar-wrap' })
+    const username = item.authorLogin?.trim()
+    const hoverText = username ? `@${username}` : undefined
+    const avatarHost = username
+      ? wrap.createEl('a', {
+          cls: 'github-query-avatar-link',
+          attr: {
+            href: `https://github.com/${username}`,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            'aria-label': hoverText ?? 'GitHub user profile'
+          }
+        })
+      : wrap
+
+    if (hoverText) {
+      avatarHost.setAttr('title', hoverText)
+    }
+
+    if (item.avatarUrl) {
+      avatarHost.createEl('img', {
+        cls: 'github-query-avatar',
+        attr: {
+          alt: hoverText ?? '',
+          loading: 'lazy',
+          src: item.avatarUrl
+        }
+      })
+    } else {
+      const ph = avatarHost.createDiv({ cls: 'github-query-avatar-placeholder' })
+      setIcon(ph, 'user')
+    }
+  }
+
+  private appendQueryResultStatsInner(parent: HTMLElement, item: QueryResultItem): void {
+    if (item.statsAdditions === undefined || item.statsDeletions === undefined) {
+      return
+    }
+    const row = parent.createSpan({ cls: 'github-query-stats' })
+    row.createSpan({ cls: 'github-query-stat-add', text: `+${item.statsAdditions}` })
+    row.createSpan({ cls: 'github-query-stat-del', text: ` −${item.statsDeletions}` })
+  }
+
+  private appendQueryResultStatsCompact(textCol: HTMLElement, item: QueryResultItem): void {
+    if (item.statsAdditions === undefined || item.statsDeletions === undefined) {
+      return
+    }
+    textCol.appendText(' ')
+    const inner = textCol.createSpan({ cls: 'github-query-stats-inline-wrap' })
+    this.appendQueryResultStatsInner(inner, item)
   }
 
   private getUtcRangeForDate(yyyyMmDd: string): { startMs: number; endMs: number; sinceIso: string } {
@@ -808,6 +1038,21 @@ export default class GithubQueryPlugin extends Plugin {
     })
   }
 
+  private async mapInBatches<T, R>(
+    items: T[],
+    batchSize: number,
+    fn: (item: T) => Promise<R>
+  ): Promise<R[]> {
+    const out: R[] = []
+    const size = Math.max(1, batchSize)
+    for (let i = 0; i < items.length; i += size) {
+      const batch = items.slice(i, i + size)
+      const part = await Promise.all(batch.map((item) => fn(item)))
+      out.push(...part)
+    }
+    return out
+  }
+
   private async fetchPullRequests(
     params: {
       mode: QueryMode
@@ -816,6 +1061,7 @@ export default class GithubQueryPlugin extends Plugin {
       repo?: string
       limit: number
       page: number
+      showStats: boolean
     },
     options?: { bypassCache?: boolean }
   ): Promise<PagedQueryResult> {
@@ -843,28 +1089,81 @@ export default class GithubQueryPlugin extends Plugin {
         qualifiers.push(`repo:${params.repo}`)
       }
 
-      const q = encodeURIComponent(qualifiers.join(' '))
+      const queryText = qualifiers.join(' ')
       const perPage = Math.min(Math.max(params.limit, 1), 100)
-      const response = await this.githubApiGet(
-        `https://api.github.com/search/issues?q=${q}&sort=updated&order=desc&per_page=${perPage}&page=${params.page}`
-      )
-
-      const items = (response.json?.items ?? []) as Array<{
-        title: string
-        html_url: string
-        repository_url?: string
-      }>
-      const totalCount = Number(response.json?.total_count ?? 0)
-      const hasMore = params.page * perPage < totalCount && items.length === perPage
-
-      return {
-        items: items.map((item) => ({
-          title: item.title,
-          url: item.html_url,
-          subtitle: item.repository_url?.split('/repos/')[1]
-        })),
-        hasMore
+      const graphqlQuery = `query SearchPullRequests($query: String!, $first: Int!, $after: String) {
+  search(query: $query, type: ISSUE, first: $first, after: $after) {
+    issueCount
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ... on PullRequest {
+        title
+        url
+        additions
+        deletions
+        author {
+          login
+          avatarUrl
+        }
+        repository {
+          nameWithOwner
+        }
       }
+    }
+  }
+}`
+
+      type SearchPullRequestsResponse = {
+        search: {
+          issueCount: number
+          pageInfo: { hasNextPage: boolean; endCursor: string | null }
+          nodes: Array<{
+            title: string
+            url: string
+            additions: number
+            deletions: number
+            author: { login?: string | null; avatarUrl?: string | null } | null
+            repository: { nameWithOwner: string }
+          }>
+        }
+      }
+
+      let afterCursor: string | null = null
+      let latest: SearchPullRequestsResponse['search'] | null = null
+      for (let currentPage = 1; currentPage <= params.page; currentPage += 1) {
+        const data = await this.githubGraphqlRequest<SearchPullRequestsResponse>(graphqlQuery, {
+          query: queryText,
+          first: perPage,
+          after: afterCursor
+        })
+        latest = data.search
+        if (currentPage < params.page && !latest.pageInfo.hasNextPage) {
+          break
+        }
+        afterCursor = latest.pageInfo.endCursor
+      }
+
+      const page = latest ?? {
+        issueCount: 0,
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: []
+      }
+
+      const items: QueryResultItem[] = page.nodes.map((node) => ({
+        title: node.title,
+        url: node.url,
+        subtitle: node.repository.nameWithOwner,
+        avatarUrl: node.author?.avatarUrl ?? undefined,
+        authorLogin: node.author?.login ?? undefined,
+        statsAdditions: params.showStats ? node.additions : undefined,
+        statsDeletions: params.showStats ? node.deletions : undefined
+      }))
+
+      const hasMore = page.pageInfo.hasNextPage
+      return { items, hasMore }
     }
 
     if (options?.bypassCache) {
@@ -874,6 +1173,7 @@ export default class GithubQueryPlugin extends Plugin {
     return this.getOrSetCache(key, loader)
   }
 
+
   private async fetchCommits(
     params: {
       date: string
@@ -882,6 +1182,7 @@ export default class GithubQueryPlugin extends Plugin {
       limit: number
       page: number
       excludeMergeCommits: boolean
+      showStats: boolean
     },
     options?: { bypassCache?: boolean }
   ): Promise<PagedQueryResult> {
@@ -903,6 +1204,8 @@ export default class GithubQueryPlugin extends Plugin {
         html_url: string
         sha: string
         parents?: Array<{ sha: string }>
+        author?: { login?: string; avatar_url?: string } | null
+        committer?: { login?: string; avatar_url?: string } | null
         commit: { message: string; author?: { date?: string }; committer?: { date?: string } }
       }>
 
@@ -926,12 +1229,48 @@ export default class GithubQueryPlugin extends Plugin {
           })
         : inDay
 
-      return {
-        items: filtered.slice(0, params.limit).map((item) => ({
+      const sliced = filtered.slice(0, params.limit)
+      const bases: QueryResultItem[] = sliced.map((item) => {
+        const ghUser = item.author ?? item.committer
+        return {
           title: item.commit.message.split('\n')[0],
           url: item.html_url,
-          subtitle: item.sha.slice(0, 7)
-        })),
+          subtitle: item.sha.slice(0, 7),
+          avatarUrl: ghUser?.avatar_url ?? undefined,
+          authorLogin: ghUser?.login ?? undefined
+        }
+      })
+
+      if (!params.showStats || sliced.length === 0) {
+        return {
+          items: bases,
+          hasMore: commits.length === perPage
+        }
+      }
+
+      const enriched = await this.mapInBatches(
+        sliced.map((raw, idx) => ({ raw, base: bases[idx]! })),
+        8,
+        async ({ raw, base }) => {
+          try {
+            const r = await this.githubApiGet(
+              `https://api.github.com/repos/${params.repo}/commits/${raw.sha}`
+            )
+            const j = r.json as { stats?: { additions?: number; deletions?: number } }
+            const add = j.stats?.additions
+            const del = j.stats?.deletions
+            if (add === undefined || del === undefined) {
+              return base
+            }
+            return { ...base, statsAdditions: add, statsDeletions: del }
+          } catch {
+            return base
+          }
+        }
+      )
+
+      return {
+        items: enriched,
         hasMore: commits.length === perPage
       }
     }
@@ -1019,6 +1358,46 @@ class GithubQuerySettingTab extends PluginSettingTab {
             return
           }
           this.plugin.settings.defaultLimit = Math.floor(parsed)
+          await this.plugin.saveSettings()
+        })
+      )
+
+    new Setting(containerEl)
+      .setName('Default layout')
+      .setDesc('Render results as a list or table when a block omits layout:.')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('list', 'List')
+          .addOption('table', 'Table')
+          .setValue(this.plugin.settings.defaultLayout)
+          .onChange(async (value) => {
+            this.plugin.settings.defaultLayout = value as QueryLayout
+            await this.plugin.saveSettings()
+          })
+      )
+
+    new Setting(containerEl)
+      .setName('Default density')
+      .setDesc('Tighter or roomier spacing for list and table rows when a block omits density:.')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('compact', 'Compact')
+          .addOption('comfortable', 'Comfortable')
+          .setValue(this.plugin.settings.defaultDensity)
+          .onChange(async (value) => {
+            this.plugin.settings.defaultDensity = value as QueryDensity
+            await this.plugin.saveSettings()
+          })
+      )
+
+    new Setting(containerEl)
+      .setName('Include line stats (+/−)')
+      .setDesc(
+        'When on, results can show per-row additions and deletions. Each row triggers an extra GitHub API request (batched). Blocks can override with stats: true or stats: false.'
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.defaultStats).onChange(async (value) => {
+          this.plugin.settings.defaultStats = value
           await this.plugin.saveSettings()
         })
       )
