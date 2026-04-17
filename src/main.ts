@@ -23,7 +23,7 @@ const BLOCK_FIELD_REFERENCE = `Required
 Common
   mode: merged | created | open     (PRs only; default merged)
   date: YYYY-MM-DD | from-note | (omit = use note filename date; ignored for mode: open)
-  author: @me | github-login
+  author: @me | github-login  (optional for PRs, required for commits)
   repo: owner/name          (required for commits; optional filter for PRs)
   limit: 20                 (page size for API + Load more)
 
@@ -316,9 +316,9 @@ export default class GithubQueryPlugin extends Plugin {
     }
 
     const authorRaw = parsed.author === '@me' ? this.settings.githubUsername : parsed.author ?? ''
-    const author = this.sanitizeGithubLogin(authorRaw)
-    if (!author) {
-      this.renderBlockHelp(el, 'No GitHub author is set for this query.', [
+    const author = this.sanitizeGithubLogin(authorRaw) || undefined
+    if (parsed.entity === 'commits' && !author) {
+      this.renderBlockHelp(el, 'No GitHub author is set for this commits query.', [
         'Add author: your-login or author: @me to the block.',
         'For @me, set GitHub username in plugin settings (OAuth usually fills this).'
       ])
@@ -388,7 +388,7 @@ export default class GithubQueryPlugin extends Plugin {
             : await this.fetchCommits(
                 {
                   date: resolvedDate as string,
-                  author,
+                  author: author as string,
                   repo: parsed.repo,
                   limit: parsed.limit ?? this.settings.defaultLimit,
                   page,
@@ -560,11 +560,19 @@ export default class GithubQueryPlugin extends Plugin {
 
     const entity = data.entity as QueryEntity
     const repo = data.repo?.trim()
+    const author = data.author?.trim()
     if (entity === 'commits' && !repo) {
       return {
         ok: false,
         title: 'Commits queries need a repository.',
         hints: ['Add repo: owner/name (same format as on GitHub).']
+      }
+    }
+    if (entity === 'commits' && !author) {
+      return {
+        ok: false,
+        title: 'Commits queries need an author.',
+        hints: ['Add author: your-login or author: @me.']
       }
     }
 
@@ -574,7 +582,7 @@ export default class GithubQueryPlugin extends Plugin {
         entity,
         mode,
         date: data.date,
-        author: data.author,
+        author,
         repo: data.repo,
         limit,
         excludeMergeCommits: this.parseBoolean(data.exclude_merge_commits)
@@ -804,7 +812,7 @@ export default class GithubQueryPlugin extends Plugin {
     params: {
       mode: QueryMode
       date?: string
-      author: string
+      author?: string
       repo?: string
       limit: number
       page: number
@@ -812,8 +820,11 @@ export default class GithubQueryPlugin extends Plugin {
     options?: { bypassCache?: boolean }
   ): Promise<PagedQueryResult> {
     const loader = async (): Promise<PagedQueryResult> => {
-      const author = this.sanitizeGithubLogin(params.author)
-      const qualifiers = ['is:pr', `author:${author}`]
+      const author = this.sanitizeGithubLogin(params.author ?? '')
+      const qualifiers = ['is:pr']
+      if (author) {
+        qualifiers.push(`author:${author}`)
+      }
       if (params.mode === 'open') {
         qualifiers.push('is:open')
       } else if (params.mode === 'merged') {
