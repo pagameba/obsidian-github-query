@@ -36,6 +36,14 @@ repo: your-org/your-repo
 ```
 
 ```github-query
+entity: prs
+mode: open
+author: @me
+repo: your-org/your-repo
+limit: 20
+```
+
+```github-query
 entity: commits
 date: from-note
 author: @me
