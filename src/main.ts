@@ -766,8 +766,48 @@ export default class GithubQueryPlugin extends Plugin {
     const cleanPath = normalizePath(path)
     const filename = cleanPath.split('/').pop() ?? cleanPath
     const withoutExt = filename.replace(/\.md$/i, '')
-    const match = withoutExt.match(/\d{4}-\d{2}-\d{2}/)
-    return match?.[0] ?? null
+
+    const isoMatch = withoutExt.match(/\b(\d{4})-(\d{2})-(\d{2})\b/)
+    if (isoMatch) {
+      return isoMatch[0]
+    }
+
+    const monthNameMatch = withoutExt.match(
+      /\b(\d{4})[\s._-]+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[\s._-]+(\d{1,2})\b/i
+    )
+    if (!monthNameMatch) {
+      return null
+    }
+
+    const year = Number(monthNameMatch[1])
+    const day = Number(monthNameMatch[3])
+    if (!Number.isFinite(year) || !Number.isFinite(day) || day < 1 || day > 31) {
+      return null
+    }
+
+    const monthName = monthNameMatch[2].slice(0, 3).toLowerCase()
+    const monthMap: Record<string, number> = {
+      jan: 1,
+      feb: 2,
+      mar: 3,
+      apr: 4,
+      may: 5,
+      jun: 6,
+      jul: 7,
+      aug: 8,
+      sep: 9,
+      oct: 10,
+      nov: 11,
+      dec: 12
+    }
+    const month = monthMap[monthName]
+    if (!month) {
+      return null
+    }
+
+    const mm = String(month).padStart(2, '0')
+    const dd = String(day).padStart(2, '0')
+    return `${year}-${mm}-${dd}`
   }
 
   private getAuthHeaders(): Record<string, string> {
